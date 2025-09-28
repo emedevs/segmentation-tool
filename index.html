@@ -75,6 +75,7 @@
 
     // When the user selects an image, read it and perform segmentation.
     imageUpload.addEventListener('change', handleImageUpload);
+    // Redraw all layers when the user updates the overlay text so that the subject remains on top.
     updateButton.addEventListener('click', drawLayers);
 
     async function handleImageUpload(event) {
@@ -97,7 +98,7 @@
           const bgCtx = bgCanvas.getContext('2d');
           bgCtx.clearRect(0, 0, img.width, img.height);
           bgCtx.drawImage(img, 0, 0);
-          // drawLayers
+          // Clear subject and text layers while processing
           subjectCanvas.getContext('2d').clearRect(0, 0, img.width, img.height);
           textCanvas.getContext('2d').clearRect(0, 0, img.width, img.height);
           // Update status
@@ -131,9 +132,14 @@
     // subject layer will remain empty.
     function drawLayers() {
       if (!imgElem) return;
+      // Compose layers in order: background, text, then subject.
+      // This ensures the text is sandwiched between the darkened background
+      // and the segmented person.
       drawBackgroundLayer();
-    drawTextLayer();
-  drawSubjectLayer();
+      drawTextLayer();
+      drawSubjectLayer();
+    }
+
     // Darken the background (non-subject) while keeping the subject area intact.
     function drawBackgroundLayer() {
       const ctx = bgCanvas.getContext('2d');
