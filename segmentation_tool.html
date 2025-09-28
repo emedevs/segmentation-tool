@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Subject Segmentation and Text Overlay Tool</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    #controls {
+      margin-bottom: 15px;
+    }
+    #canvasContainer {
+      position: relative;
+      display: inline-block;
+      border: 1px solid #ccc;
+      margin-top: 10px;
+    }
+    /* Each canvas sits on top of the other.  The z-indexes ensure the right order:
+       1) backgroundCanvas on the bottom,
+       2) textCanvas in the middle (for the overlay text),
+       3) subjectCanvas on top to draw the segmented person. */
+    #backgroundCanvas,
+    #textCanvas,
+    #subjectCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Subject Segmentation and Text Overlay</h1>
+  <p>Use this simple tool to segment a person from a photo and insert text between the background and the subject.  The tool runs entirely in your browser using the <a href="https://github.com/tensorflow/tfjs-models/tree/master/body-pix" target="_blank">BodyPix</a> model from TensorFlow.js.</p>
+  <div id="controls">
+    <input type="file" id="imageUpload" accept="image/*">
+    <input type="text" id="overlayText" placeholder="Enter text to overlay" style="margin-left:10px;">
+    <button id="updateButton">Update Text</button>
+  </div>
+  <!-- Status messages to inform the user about loading/segmentation state -->
+  <p id="status" style="font-style: italic; color: #555;"></p>
+  <div id="canvasContainer">
+    <canvas id="backgroundCanvas"></canvas>
+    <canvas id="textCanvas"></canvas>
+    <canvas id="subjectCanvas"></canvas>
+  </div>
+
+  <!-- Load TensorFlow.js and BodyPix.  These scripts are served from a CDN.  -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@2.0.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.0.5"></script>
+  <script>
+    const imageUpload = document.getElementById('imageUpload');
+    const overlayTextInput = document.getElementById('overlayText');
+    const updateButton = document.getElementById('updateButton');
+    const bgCanvas = document.getElementById('backgroundCanvas');
+    const textCanvas = document.getElementById('textCanvas');
+    const subjectCanvas = document.getElementById('subjectCanvas');
+    const statusElem = document.getElementById('status');
+
+    let net;      // BodyPix model
+    let imgElem;  // HTMLImageElement containing the uploaded image
+    let segmentation; // result of the segmentation
+
+    // Load the BodyPix model once when the page loads.
+    statusElem.textContent = 'Loading segmentation model...';
+    bodyPix.load().then(m => {
+      net = m;
+      statusElem.textContent = 'Model loaded. Ready.';
+      console.log('BodyPix model loaded');
+    }).catch(err => {
+      statusElem.textContent = 'Failed to load segmentation model.';
+      console.error('Failed to load BodyPix model:', err);
+    });
+
+    // When the user selects an image, read it and perform segmentation.
+    imageUpload.addEventListener('change', handleImageUpload);
+    updateButton.addEventListener('click', drawTextLayer);
+
+    async function handleImageUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const img = new Image();
+        img.onload = async function() {
+          imgElem = img;
+          // Resize canvases to match image dimensions
+          [bgCanvas, textCanvas, subjectCanvas].forEach(canvas => {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            // position canvases relative to container
+            canvas.style.width = img.width + 'px';
+            canvas.style.height = img.height + 'px';
+          });
+          // Draw the original image on the background canvas initially
+          const bgCtx = bgCanvas.getContext('2d');
+          bgCtx.clearRect(0, 0, img.width, img.height);
+          bgCtx.drawImage(img, 0, 0);
+          // Clear subject and text layers while processing
+          subjectCanvas.getContext('2d').clearRect(0, 0, img.width, img.height);
+          textCanvas.getContext('2d').clearRect(0, 0, img.width, img.height);
+          // Update status
+          if (!net) {
+            statusElem.textContent = 'Image loaded. Waiting for model...';
+            segmentation = null;
+            drawLayers();
+            return;
+          }
+          statusElem.textContent = 'Image loaded. Running segmentation...';
+          try {
+            // Estimate segmentation for the person in the image
+            // Using outputStride 16 and a higher segmentation threshold gives a cleaner mask
+            segmentation = await net.estimatePersonSegmentation(img, 16, 0.7);
+            statusElem.textContent = 'Segmentation complete.';
+          } catch (err) {
+            console.warn('Segmentation failed:', err);
+            segmentation = null;
+            statusElem.textContent = 'Segmentation failed. Displaying original image.';
+          }
+          // Draw all layers (even if segmentation is null)
+          drawLayers();
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // Draw background, subject and overlay text layers.  If segmentation is not
+    // available, the background will simply be the original image and the
+    // subject layer will remain empty.
+    function drawLayers() {
+      if (!imgElem) return;
+      drawBackgroundLayer();
+      drawSubjectLayer();
+      drawTextLayer();
+    }
+
+    // Darken the background (non-subject) while keeping the subject area intact.
+    function drawBackgroundLayer() {
+      const ctx = bgCanvas.getContext('2d');
+      // If no segmentation is available, simply draw the original image
+      if (!segmentation || !segmentation.data) {
+        ctx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
+        ctx.drawImage(imgElem, 0, 0);
+        return;
+      }
+      const { data: mask, width, height } = segmentation;
+      // Draw the original image again
+      ctx.drawImage(imgElem, 0, 0);
+      // Extract image data for manipulation
+      const imageData = ctx.getImageData(0, 0, width, height);
+      const pixelData = imageData.data;
+      // Loop over each pixel.  mask[i] = 1 indicates a person pixel, 0 indicates background.
+      for (let i = 0; i < mask.length; i++) {
+        const isBackground = mask[i] === 0;
+        if (isBackground) {
+          const idx = i * 4;
+          // Darken the background by reducing RGB values by 50%
+          pixelData[idx] = pixelData[idx] * 0.5;
+          pixelData[idx + 1] = pixelData[idx + 1] * 0.5;
+          pixelData[idx + 2] = pixelData[idx + 2] * 0.5;
+          // Alpha remains unchanged
+        }
+      }
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    // Draw only the subject on its own canvas by masking out the background.
+    function drawSubjectLayer() {
+      const sCtx = subjectCanvas.getContext('2d');
+      const width = subjectCanvas.width;
+      const height = subjectCanvas.height;
+      // Clear any existing drawing
+      sCtx.clearRect(0, 0, width, height);
+      // If segmentation is not available, we do not draw a separate subject layer
+      if (!segmentation || !segmentation.data) {
+        return;
+      }
+      const mask = segmentation.data;
+      // Draw the original image on the subject canvas
+      sCtx.drawImage(imgElem, 0, 0);
+      // Create a mask canvas where the subject has full alpha and background is transparent
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = width;
+      maskCanvas.height = height;
+      const mCtx = maskCanvas.getContext('2d');
+      const maskImageData = mCtx.createImageData(width, height);
+      const maskPixels = maskImageData.data;
+      for (let i = 0; i < mask.length; i++) {
+        const idx = i * 4;
+        if (mask[i] === 1) {
+          // Person pixel: fully opaque in the mask
+          maskPixels[idx + 3] = 255;
+        } else {
+          // Background pixel: fully transparent in the mask
+          maskPixels[idx + 3] = 0;
+        }
+      }
+      mCtx.putImageData(maskImageData, 0, 0);
+      // Use the mask to keep only the subject pixels
+      sCtx.globalCompositeOperation = 'destination-in';
+      sCtx.drawImage(maskCanvas, 0, 0);
+      sCtx.globalCompositeOperation = 'source-over';
+    }
+
+    // Draw the overlay text on its own canvas.  The text appears in front of the background but behind the subject.
+    function drawTextLayer() {
+      if (!imgElem) return;
+      const tCtx = textCanvas.getContext('2d');
+      // Clear previous text
+      tCtx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+      const text = overlayTextInput.value;
+      if (!text) return;
+      // Choose font size relative to image height (5% of height)
+      const fontSize = Math.max(16, Math.floor(imgElem.height * 0.05));
+      tCtx.font = `${fontSize}px Arial`;
+      tCtx.textAlign = 'center';
+      tCtx.textBaseline = 'middle';
+      // Add a shadow for readability on varying backgrounds
+      tCtx.shadowColor = 'rgba(0,0,0,0.7)';
+      tCtx.shadowBlur = 4;
+      // Draw white text centered horizontally near the bottom of the image (80% down)
+      const x = textCanvas.width / 2;
+      const y = textCanvas.height * 0.8;
+      tCtx.fillStyle = '#FFFFFF';
+      tCtx.fillText(text, x, y);
+    }
+  </script>
+</body>
+</html>
