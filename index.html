@@ -75,7 +75,7 @@
 
     // When the user selects an image, read it and perform segmentation.
     imageUpload.addEventListener('change', handleImageUpload);
-    updateButton.addEventListener('click', drawTextLayer);
+    updateButton.addEventListener('click', drawLayers);
 
     async function handleImageUpload(event) {
       const file = event.target.files[0];
@@ -97,7 +97,7 @@
           const bgCtx = bgCanvas.getContext('2d');
           bgCtx.clearRect(0, 0, img.width, img.height);
           bgCtx.drawImage(img, 0, 0);
-          // Clear subject and text layers while processing
+          // drawLayers
           subjectCanvas.getContext('2d').clearRect(0, 0, img.width, img.height);
           textCanvas.getContext('2d').clearRect(0, 0, img.width, img.height);
           // Update status
@@ -132,10 +132,8 @@
     function drawLayers() {
       if (!imgElem) return;
       drawBackgroundLayer();
-      drawSubjectLayer();
-      drawTextLayer();
-    }
-
+    drawTextLayer();
+  drawSubjectLayer();
     // Darken the background (non-subject) while keeping the subject area intact.
     function drawBackgroundLayer() {
       const ctx = bgCanvas.getContext('2d');
